@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useRef } from "react";
 import {
   SafeAreaView,
   View,
@@ -10,6 +10,8 @@ import {
   StatusBar,
   Alert,
   Platform,
+  Animated,
+  Easing,
 } from "react-native";
 
 const RED = "#B91C1C";
@@ -91,6 +93,31 @@ const EXTRAS = [
   ["Pimentão", 2.5],
 ];
 
+const VALID_COUPONS = {
+  VENEZA10: { type: "percent", value: 10, label: "10% OFF" },
+  VENEZA15: { type: "percent", value: 15, label: "15% OFF" },
+  VENEZA5: { type: "percent", value: 5, label: "5% OFF" },
+  FRETEGRATIS: { type: "freeShipping", value: 0, label: "Frete Grátis" },
+};
+
+const QUIZ = [
+  {
+    q: "Qual ingrediente é tradicional na Margherita?",
+    options: ["Manjericão", "Abacaxi", "Batata"],
+    correct: 0,
+  },
+  {
+    q: "De onde vem o nome 'pizza Margherita'?",
+    options: ["Rainha Margherita", "Um chef italiano", "Uma cidade"],
+    correct: 0,
+  },
+  {
+    q: "Qual queijo NÃO vai na Quatro Queijos?",
+    options: ["Cheddar", "Provolone", "Parmesão"],
+    correct: 0,
+  },
+];
+
 const money = (value) =>
   Number(value || 0).toLocaleString("pt-BR", {
     style: "currency",
@@ -118,6 +145,7 @@ export default function App() {
   const [cart, setCart] = useState([]);
   const [coupon, setCoupon] = useState("");
   const [couponApplied, setCouponApplied] = useState(false);
+  const [activeCoupon, setActiveCoupon] = useState(null);
 
   const [orders, setOrders] = useState([]);
   const [address, setAddress] = useState(
@@ -129,17 +157,39 @@ export default function App() {
   const [changeFor, setChangeFor] = useState("");
 
   const [order, setOrder] = useState(null);
-  const [gameMessage, setGameMessage] = useState("");
   const [favorites, setFavorites] = useState([]);
 
+  // ---------- ESTADOS DOS JOGOS ----------
+  const [activeGame, setActiveGame] = useState(null); // "roda" | "memoria" | "quiz"
+  const [gameResult, setGameResult] = useState(null);
+
+  const [spinning, setSpinning] = useState(false);
+  const [wheelResult, setWheelResult] = useState(null);
+  const spinValue = useRef(new Animated.Value(0)).current;
+
+  const [memoryCards, setMemoryCards] = useState([]);
+  const [flipped, setFlipped] = useState([]);
+  const [matched, setMatched] = useState([]);
+
+  const [quizIndex, setQuizIndex] = useState(0);
+  const [quizScore, setQuizScore] = useState(0);
+
+  // ---------- CÁLCULOS ----------
   const subtotal = cart.reduce(
     (sum, item) => sum + item.total * item.quantity,
     0
   );
 
-  const discount = couponApplied ? subtotal * 0.1 : 0;
+  const isFreeShipping =
+    couponApplied && activeCoupon?.type === "freeShipping";
 
-  const deliveryFee = delivery === "Entrega em casa" ? 6.9 : 0;
+  const discount =
+    couponApplied && activeCoupon?.type === "percent"
+      ? subtotal * (activeCoupon.value / 100)
+      : 0;
+
+  const deliveryFee =
+    delivery === "Entrega em casa" && !isFreeShipping ? 6.9 : 0;
 
   const total = Math.max(0, subtotal + deliveryFee - discount);
 
@@ -171,16 +221,12 @@ export default function App() {
       tracking: "orders",
       menu: "home",
     };
-
     setPage(destinations[page] || "home");
   };
 
+  // ---------- CARRINHO ----------
   const addToCart = () => {
-    const extraCost = extras.reduce(
-      (sum, item) => sum + item.price,
-      0
-    );
-
+    const extraCost = extras.reduce((s, i) => s + i.price, 0);
     const item = {
       key: `${selectedPizza.id}-${Date.now()}`,
       pizza: selectedPizza,
@@ -191,9 +237,7 @@ export default function App() {
       total: selectedPizza.price + extraCost,
       image: selectedPizza.image,
     };
-
-    setCart((oldCart) => [...oldCart, item]);
-
+    setCart((old) => [...old, item]);
     setExtras([]);
     setNotes("");
     setQuantity(1);
@@ -201,8 +245,8 @@ export default function App() {
   };
 
   const changeCartQty = (key, delta) => {
-    setCart((oldCart) =>
-      oldCart
+    setCart((old) =>
+      old
         .map((item) =>
           item.key === key
             ? { ...item, quantity: item.quantity + delta }
@@ -213,78 +257,168 @@ export default function App() {
   };
 
   const removeItem = (key) => {
-    setCart((oldCart) =>
-      oldCart.filter((item) => item.key !== key)
-    );
+    setCart((old) => old.filter((item) => item.key !== key));
   };
 
-  const applyCoupon = () => {
-    if (coupon.trim().toUpperCase() === "VENEZA10") {
-      setCouponApplied(true);
+  const applyCoupon = (code) => {
+    const codeToUse = (code ?? coupon).trim().toUpperCase();
+    const found = VALID_COUPONS[codeToUse];
 
-      Alert.alert(
-        "Cupom aplicado",
-        "Você ganhou 10% de desconto nos itens!"
-      );
+    if (found) {
+      setCoupon(codeToUse);
+      setCouponApplied(true);
+      setActiveCoupon(found);
+      Alert.alert("Cupom aplicado", `${found.label} aplicado com sucesso!`);
     } else {
       setCouponApplied(false);
-
+      setActiveCoupon(null);
       Alert.alert(
         "Cupom não encontrado",
-        "Experimente o cupom VENEZA10."
+        "Experimente VENEZA5, VENEZA10, VENEZA15 ou FRETEGRATIS."
       );
     }
   };
 
   const confirmOrder = () => {
     if (!cart.length) {
-      Alert.alert(
-        "Carrinho vazio",
-        "Adicione uma pizza antes de confirmar."
-      );
+      Alert.alert("Carrinho vazio", "Adicione uma pizza antes de confirmar.");
       return;
     }
-
     if (delivery === "Entrega em casa" && !address.trim()) {
-      Alert.alert(
-        "Endereço obrigatório",
-        "Informe o endereço de entrega."
-      );
+      Alert.alert("Endereço obrigatório", "Informe o endereço de entrega.");
       setPage("customer");
       return;
     }
 
     const newOrder = {
       id: `VSM-${Math.floor(1000 + Math.random() * 9000)}`,
-      items: cart
-        .map((item) => `${item.quantity}x ${item.name}`)
-        .join(", "),
+      items: cart.map((i) => `${i.quantity}x ${i.name}`).join(", "),
       total,
       address:
-        delivery === "Entrega em casa"
-          ? address
-          : "Retirada na loja",
+        delivery === "Entrega em casa" ? address : "Retirada na loja",
       payment,
       status: "Pedido recebido",
       createdAt: new Date().toLocaleString("pt-BR"),
     };
 
     setOrder(newOrder);
-    setOrders((oldOrders) => [newOrder, ...oldOrders]);
-
+    setOrders((old) => [newOrder, ...old]);
     setCart([]);
     setCouponApplied(false);
+    setActiveCoupon(null);
     setCoupon("");
-
     setPage("confirmation");
   };
 
-  const btn = (
-    label,
-    onPress,
-    outline = false,
-    style = {}
-  ) => (
+  // ---------- JOGOS ----------
+  const awardPrize = (prizeLabel, couponCode) => {
+    setGameResult({ prize: prizeLabel, coupon: couponCode });
+    setCoupon(couponCode);
+    setCouponApplied(true);
+    setActiveCoupon(VALID_COUPONS[couponCode] || null);
+    Alert.alert(
+      "🏆 Você ganhou!",
+      `${prizeLabel}\nCupom ${couponCode} já foi aplicado no seu carrinho.`
+    );
+  };
+
+  const spinWheel = () => {
+    if (spinning) return;
+    setSpinning(true);
+    setWheelResult(null);
+    spinValue.setValue(0);
+
+    const prizes = [
+      { label: "10% OFF", coupon: "VENEZA10" },
+      { label: "Frete Grátis", coupon: "FRETEGRATIS" },
+      { label: "15% OFF", coupon: "VENEZA15" },
+      { label: "Tente novamente", coupon: null },
+      { label: "5% OFF", coupon: "VENEZA5" },
+      { label: "Brinde na próxima", coupon: null },
+    ];
+
+    const pick = prizes[Math.floor(Math.random() * prizes.length)];
+
+    Animated.timing(spinValue, {
+      toValue: 1,
+      duration: 2000,
+      easing: Easing.out(Easing.cubic),
+      useNativeDriver: true,
+    }).start(() => {
+      setWheelResult(pick);
+      setSpinning(false);
+      if (pick.coupon) {
+        awardPrize(pick.label, pick.coupon);
+      } else {
+        Alert.alert("Roda da Fortuna", `Resultado: ${pick.label}`);
+      }
+    });
+  };
+
+  const startMemory = () => {
+    const icons = ["🍕", "🍕", "🧀", "🧀", "🍅", "🍅", "🍷", "🍷"];
+    const shuffled = [...icons].sort(() => Math.random() - 0.5);
+    setMemoryCards(shuffled);
+    setFlipped([]);
+    setMatched([]);
+    setGameResult(null);
+  };
+
+  const flipCard = (index) => {
+    if (flipped.includes(index) || matched.includes(index)) return;
+    if (flipped.length === 2) return;
+
+    const newFlipped = [...flipped, index];
+    setFlipped(newFlipped);
+
+    if (newFlipped.length === 2) {
+      const [a, b] = newFlipped;
+      if (memoryCards[a] === memoryCards[b]) {
+        const newMatched = [...matched, a, b];
+        setMatched(newMatched);
+        setFlipped([]);
+        if (newMatched.length === memoryCards.length) {
+          setTimeout(
+            () => awardPrize("Frete Grátis", "FRETEGRATIS"),
+            400
+          );
+        }
+      } else {
+        setTimeout(() => setFlipped([]), 900);
+      }
+    }
+  };
+
+  const answerQuiz = (optionIndex) => {
+    const isCorrect = optionIndex === QUIZ[quizIndex].correct;
+    const newScore = quizScore + (isCorrect ? 1 : 0);
+    setQuizScore(newScore);
+
+    if (quizIndex + 1 < QUIZ.length) {
+      setQuizIndex(quizIndex + 1);
+    } else {
+      const prize =
+        newScore === QUIZ.length
+          ? { label: "15% OFF", coupon: "VENEZA15" }
+          : newScore >= 2
+          ? { label: "10% OFF", coupon: "VENEZA10" }
+          : null;
+
+      if (prize) {
+        awardPrize(prize.label, prize.coupon);
+      } else {
+        Alert.alert(
+          "Quiz finalizado",
+          `Você acertou ${newScore}/${QUIZ.length}. Tente novamente!`
+        );
+      }
+      setQuizIndex(0);
+      setQuizScore(0);
+    }
+  };
+
+  // ---------- COMPONENTES UTILITÁRIOS ----------
+  const btn = (labelTxt, onPress, outline = false, style = {}) => (
     <TouchableOpacity
       onPress={onPress}
       activeOpacity={0.85}
@@ -310,7 +444,7 @@ export default function App() {
           fontSize: 14,
         }}
       >
-        {label}
+        {labelTxt}
       </Text>
     </TouchableOpacity>
   );
@@ -352,11 +486,8 @@ export default function App() {
       >
         {title}
       </Text>
-
       {!!subtitle && (
-        <Text style={{ color: "#F9DECE", marginTop: 4 }}>
-          {subtitle}
-        </Text>
+        <Text style={{ color: "#F9DECE", marginTop: 4 }}>{subtitle}</Text>
       )}
     </View>
   );
@@ -374,14 +505,8 @@ export default function App() {
     </Text>
   );
 
-  const field = (
-    placeholder,
-    value,
-    onChangeText,
-    extra = {}
-  ) => {
+  const field = (placeholder, value, onChangeText, extra = {}) => {
     const { style: extraStyle, ...inputProps } = extra;
-
     return (
       <TextInput
         placeholder={placeholder}
@@ -434,41 +559,24 @@ export default function App() {
           backgroundColor: CREAM,
         }}
       />
-
       <View style={{ flex: 1, marginLeft: 12 }}>
-        <Text
-          style={{
-            color: "#241A16",
-            fontWeight: "800",
-            fontSize: 15,
-          }}
-        >
+        <Text style={{ color: "#241A16", fontWeight: "800", fontSize: 15 }}>
           {pizza.name}
         </Text>
-
         <Text
           numberOfLines={2}
-          style={{
-            color: MUTED,
-            fontSize: 12,
-            marginVertical: 4,
-          }}
+          style={{ color: MUTED, fontSize: 12, marginVertical: 4 }}
         >
           {pizza.description}
         </Text>
-
         <Text style={{ color: RED, fontWeight: "800" }}>
           {money(pizza.price)}
         </Text>
       </View>
-
-      <Text style={{ color: RED, fontSize: 22, paddingHorizontal: 4 }}>
-        ›
-      </Text>
+      <Text style={{ color: RED, fontSize: 22, paddingHorizontal: 4 }}>›</Text>
     </TouchableOpacity>
   );
 
-  // A navegação inferior é criada aqui e exibida uma única vez pelo shell.
   const nav = () => (
     <View
       style={{
@@ -489,7 +597,13 @@ export default function App() {
       ].map(([icon, text, target]) => (
         <TouchableOpacity
           key={target}
-          onPress={() => setPage(target)}
+          onPress={() => {
+            setPage(target);
+            if (target === "games") {
+              setActiveGame(null);
+              setGameResult(null);
+            }
+          }}
           style={{ alignItems: "center", minWidth: 52 }}
         >
           <Text
@@ -501,7 +615,6 @@ export default function App() {
             {icon}
             {target === "cart" && cartCount ? ` ${cartCount}` : ""}
           </Text>
-
           <Text
             style={{
               fontSize: 10,
@@ -518,11 +631,7 @@ export default function App() {
   const shell = (content, withNav = false) => (
     <SafeAreaView style={{ flex: 1, backgroundColor: CREAM }}>
       <StatusBar barStyle="light-content" backgroundColor={RED} />
-
-      <View style={{ flex: 1 }}>
-        {content}
-      </View>
-
+      <View style={{ flex: 1 }}>{content}</View>
       {withNav && nav()}
     </SafeAreaView>
   );
@@ -530,10 +639,7 @@ export default function App() {
   const scroll = (children) => (
     <ScrollView
       keyboardShouldPersistTaps="handled"
-      contentContainerStyle={{
-        padding: 14,
-        paddingBottom: 24,
-      }}
+      contentContainerStyle={{ padding: 14, paddingBottom: 24 }}
     >
       {children}
     </ScrollView>
@@ -549,15 +655,9 @@ export default function App() {
         borderBottomRightRadius: 22,
       }}
     >
-      <TouchableOpacity
-        onPress={back}
-        style={{ marginBottom: 12 }}
-      >
-        <Text style={{ color: WHITE, fontSize: 16 }}>
-          ‹  Voltar
-        </Text>
+      <TouchableOpacity onPress={back} style={{ marginBottom: 12 }}>
+        <Text style={{ color: WHITE, fontSize: 16 }}>‹  Voltar</Text>
       </TouchableOpacity>
-
       <Text
         style={{
           color: WHITE,
@@ -568,16 +668,13 @@ export default function App() {
       >
         {title}
       </Text>
-
       {!!subtitle && (
-        <Text style={{ color: "#F9DECE", marginTop: 4 }}>
-          {subtitle}
-        </Text>
+        <Text style={{ color: "#F9DECE", marginTop: 4 }}>{subtitle}</Text>
       )}
     </View>
   );
 
-  // TELA INICIAL
+  // ---------- TELA INICIAL ----------
   if (page === "welcome") {
     return shell(
       <View
@@ -599,7 +696,6 @@ export default function App() {
           }}
           resizeMode="cover"
         />
-
         <View
           style={{
             position: "absolute",
@@ -611,7 +707,6 @@ export default function App() {
             opacity: 0.65,
           }}
         />
-
         <View style={{ alignItems: "center", marginBottom: 22 }}>
           <Text
             style={{
@@ -623,7 +718,6 @@ export default function App() {
           >
             Veneza
           </Text>
-
           <Text
             style={{
               color: RED_DARK,
@@ -634,38 +728,30 @@ export default function App() {
           >
             SANTA MASSA
           </Text>
-
           <Text style={{ color: MUTED, marginTop: 10 }}>
             Pizzaria Artesanal · Est. 1998
           </Text>
         </View>
-
         {btn("Entrar na conta", () => setPage("login"))}
-
         {btn("Criar conta", () => setPage("register"), true)}
-
         <View style={{ height: 65 }} />
       </View>
     );
   }
 
-  // LOGIN
+  // ---------- LOGIN ----------
   if (page === "login") {
     return shell(
       scroll(
         <>
           {backHeader("Bem-vindo", "Entre na sua conta para pedir")}
-
           {label("E-mail")}
-
           {field("seu@email.com", email, setEmail, {
             keyboardType: "email-address",
             autoCapitalize: "none",
             autoCorrect: false,
           })}
-
           {label("Senha")}
-
           {field("Digite sua senha", password, setPassword, {
             secureTextEntry: true,
             autoCapitalize: "none",
@@ -673,7 +759,6 @@ export default function App() {
             textContentType: "password",
             returnKeyType: "done",
           })}
-
           <TouchableOpacity
             onPress={() =>
               Alert.alert(
@@ -683,60 +768,44 @@ export default function App() {
             }
             style={{ alignItems: "flex-end", padding: 8 }}
           >
-            <Text style={{ color: RED }}>
-              Esqueci minha senha
-            </Text>
+            <Text style={{ color: RED }}>Esqueci minha senha</Text>
           </TouchableOpacity>
-
           {btn("Entrar", () => {
             if (!email.trim() || !email.includes("@")) {
-              Alert.alert(
-                "E-mail inválido",
-                "Digite um e-mail válido para continuar."
-              );
+              Alert.alert("E-mail inválido", "Digite um e-mail válido.");
               return;
             }
-
             if (!password.trim()) {
-              Alert.alert(
-                "Senha obrigatória",
-                "Digite sua senha para continuar."
-              );
+              Alert.alert("Senha obrigatória", "Digite sua senha.");
               return;
             }
-
             setName(email.split("@")[0] || "Cliente");
             setPage("home");
           })}
-
           {btn("Criar conta", () => setPage("register"), true)}
         </>
       )
     );
   }
 
-  // CADASTRO
+  // ---------- CADASTRO ----------
   if (page === "register") {
     return shell(
       scroll(
         <>
           {backHeader("Criar Conta", "Cadastre-se e faça seus pedidos")}
-
           {label("Nome completo")}
           {field("Seu nome", name, setName)}
-
           {label("E-mail")}
           {field("seu@email.com", email, setEmail, {
             keyboardType: "email-address",
             autoCapitalize: "none",
             autoCorrect: false,
           })}
-
           {label("Telefone / WhatsApp")}
           {field("(11) 99999-9999", phone, setPhone, {
             keyboardType: "phone-pad",
           })}
-
           {label("Senha")}
           {field(
             "Crie uma senha (mínimo 6 caracteres)",
@@ -750,18 +819,15 @@ export default function App() {
               returnKeyType: "done",
             }
           )}
-
           {btn("Criar conta", () => {
             if (!name.trim()) {
               Alert.alert("Nome obrigatório", "Digite seu nome completo.");
               return;
             }
-
             if (!email.trim() || !email.includes("@")) {
               Alert.alert("E-mail inválido", "Digite um e-mail válido.");
               return;
             }
-
             if (registerPassword.length < 6) {
               Alert.alert(
                 "Senha muito curta",
@@ -769,14 +835,11 @@ export default function App() {
               );
               return;
             }
-
             setPassword(registerPassword);
-
             Alert.alert(
               "Cadastro demonstrativo",
-              "Cadastro validado. Para criar uma conta real, conecte o aplicativo ao backend."
+              "Cadastro validado. Para criar uma conta real, conecte ao backend."
             );
-
             setPage("home");
           })}
         </>
@@ -784,7 +847,7 @@ export default function App() {
     );
   }
 
-  // INÍCIO
+  // ---------- INÍCIO ----------
   if (page === "home") {
     return shell(
       <>
@@ -798,10 +861,7 @@ export default function App() {
             borderBottomRightRadius: 20,
           }}
         >
-          <Text style={{ color: WHITE }}>
-            Olá, {name || "Cliente"}
-          </Text>
-
+          <Text style={{ color: WHITE }}>Olá, {name || "Cliente"}</Text>
           <Text
             style={{
               color: WHITE,
@@ -812,7 +872,6 @@ export default function App() {
           >
             Veneza
           </Text>
-
           <Text
             style={{
               color: WHITE,
@@ -823,18 +882,12 @@ export default function App() {
           >
             SANTA MASSA
           </Text>
-
           <View style={{ marginTop: 14 }}>
-            {field(
-              "⌕  Buscar pizzas, bebidas...",
-              search,
-              setSearch,
-              {
-                returnKeyType: "search",
-                onSubmitEditing: () => setPage("menu"),
-                style: { marginBottom: 0, borderWidth: 0 },
-              }
-            )}
+            {field("⌕  Buscar pizzas, bebidas...", search, setSearch, {
+              returnKeyType: "search",
+              onSubmitEditing: () => setPage("menu"),
+              style: { marginBottom: 0, borderWidth: 0 },
+            })}
           </View>
         </View>
 
@@ -848,10 +901,7 @@ export default function App() {
                 marginBottom: 16,
               }}
             >
-              <Text style={{ color: "#FBE1D5" }}>
-                Oferta do dia
-              </Text>
-
+              <Text style={{ color: "#FBE1D5" }}>Oferta do dia</Text>
               <Text
                 style={{
                   color: WHITE,
@@ -863,11 +913,9 @@ export default function App() {
               >
                 2ª pizza com{"\n"}30% de desconto
               </Text>
-
               <Text style={{ color: WHITE, fontSize: 12 }}>
                 Válido hoje, a partir das 18h
               </Text>
-
               {btn(
                 "Pedir agora",
                 () => {
@@ -894,7 +942,6 @@ export default function App() {
             >
               Categorias
             </Text>
-
             <View
               style={{
                 flexDirection: "row",
@@ -930,7 +977,6 @@ export default function App() {
                   <Text style={{ fontSize: 21 }}>
                     {["♨", "◉", "★", "♧", "▣", "◌"][index]}
                   </Text>
-
                   <Text
                     style={{
                       fontSize: 10,
@@ -963,7 +1009,6 @@ export default function App() {
               >
                 Mais Pedidas
               </Text>
-
               <TouchableOpacity
                 onPress={() => {
                   setCategory("Todas");
@@ -973,7 +1018,6 @@ export default function App() {
                 <Text style={{ color: RED }}>Ver todas</Text>
               </TouchableOpacity>
             </View>
-
             {PIZZAS.slice(0, 3).map(pizzaCard)}
           </>
         )}
@@ -982,7 +1026,7 @@ export default function App() {
     );
   }
 
-  // CARDÁPIO
+  // ---------- CARDÁPIO ----------
   if (page === "menu") {
     const filtered = PIZZAS.filter(
       (pizza) =>
@@ -996,11 +1040,8 @@ export default function App() {
       <>
         {heading(
           "Cardápio",
-          category === "Todas"
-            ? "Escolha sua pizza favorita"
-            : category
+          category === "Todas" ? "Escolha sua pizza favorita" : category
         )}
-
         {scroll(
           <>
             <ScrollView
@@ -1009,33 +1050,30 @@ export default function App() {
               keyboardShouldPersistTaps="handled"
               style={{ marginBottom: 8 }}
             >
-              {["Todas", "Mais Pedidas", "Salgadas", "Doces"].map(
-                (cat) => (
-                  <TouchableOpacity
-                    key={cat}
-                    onPress={() => setCategory(cat)}
+              {["Todas", "Mais Pedidas", "Salgadas", "Doces"].map((cat) => (
+                <TouchableOpacity
+                  key={cat}
+                  onPress={() => setCategory(cat)}
+                  style={{
+                    paddingVertical: 9,
+                    paddingHorizontal: 13,
+                    borderRadius: 20,
+                    backgroundColor: category === cat ? RED : WHITE,
+                    marginRight: 8,
+                    marginBottom: 8,
+                  }}
+                >
+                  <Text
                     style={{
-                      paddingVertical: 9,
-                      paddingHorizontal: 13,
-                      borderRadius: 20,
-                      backgroundColor: category === cat ? RED : WHITE,
-                      marginRight: 8,
-                      marginBottom: 8,
+                      color: category === cat ? WHITE : RED,
+                      fontWeight: "600",
                     }}
                   >
-                    <Text
-                      style={{
-                        color: category === cat ? WHITE : RED,
-                        fontWeight: "600",
-                      }}
-                    >
-                      {cat}
-                    </Text>
-                  </TouchableOpacity>
-                )
-              )}
+                    {cat}
+                  </Text>
+                </TouchableOpacity>
+              ))}
             </ScrollView>
-
             {filtered.length ? (
               filtered.map(pizzaCard)
             ) : (
@@ -1046,7 +1084,7 @@ export default function App() {
                   ? "Ainda não há bebidas cadastradas."
                   : category === "Monte a Sua"
                   ? "A opção de montar pizza ainda não foi configurada."
-                  : "Nenhum item encontrado. Tente outra categoria ou busca."}
+                  : "Nenhum item encontrado."}
               </Text>
             )}
           </>
@@ -1056,7 +1094,7 @@ export default function App() {
     );
   }
 
-  // DETALHES DA PIZZA
+  // ---------- DETALHES DA PIZZA ----------
   if (page === "pizza") {
     return shell(
       <>
@@ -1064,14 +1102,9 @@ export default function App() {
           <View>
             <Image
               source={{ uri: selectedPizza.image }}
-              style={{
-                width: "100%",
-                height: 270,
-                backgroundColor: BORDER,
-              }}
+              style={{ width: "100%", height: 270, backgroundColor: BORDER }}
               resizeMode="cover"
             />
-
             <TouchableOpacity
               onPress={back}
               style={{
@@ -1085,7 +1118,6 @@ export default function App() {
             >
               <Text style={{ fontSize: 18 }}>‹</Text>
             </TouchableOpacity>
-
             <TouchableOpacity
               onPress={() =>
                 setFavorites((old) =>
@@ -1119,7 +1151,6 @@ export default function App() {
             >
               {selectedPizza.name}
             </Text>
-
             <Text
               style={{
                 fontSize: 22,
@@ -1130,17 +1161,11 @@ export default function App() {
             >
               {money(selectedPizza.price)}
             </Text>
-
             <Text style={{ color: MUTED, fontSize: 12 }}>
               ◷ {selectedPizza.time}   ★ {selectedPizza.rating} · avaliações
             </Text>
-
             <Text
-              style={{
-                color: MUTED,
-                lineHeight: 21,
-                marginTop: 12,
-              }}
+              style={{ color: MUTED, lineHeight: 21, marginTop: 12 }}
             >
               {selectedPizza.description}
             </Text>
@@ -1155,13 +1180,7 @@ export default function App() {
             >
               Ingredientes
             </Text>
-
-            <View
-              style={{
-                flexDirection: "row",
-                flexWrap: "wrap",
-              }}
-            >
+            <View style={{ flexDirection: "row", flexWrap: "wrap" }}>
               {[
                 "Molho de tomate artesanal",
                 "Mozzarella de búfala",
@@ -1186,27 +1205,19 @@ export default function App() {
             </View>
 
             <Text
-              style={{
-                fontSize: 16,
-                fontWeight: "bold",
-                marginTop: 18,
-              }}
+              style={{ fontSize: 16, fontWeight: "bold", marginTop: 18 }}
             >
               Adicionais
             </Text>
-
             {EXTRAS.map(([extra, price]) => {
-              const checked = extras.some(
-                (item) => item.name === extra
-              );
-
+              const checked = extras.some((i) => i.name === extra);
               return (
                 <TouchableOpacity
                   key={extra}
                   onPress={() =>
                     setExtras((old) =>
                       checked
-                        ? old.filter((item) => item.name !== extra)
+                        ? old.filter((i) => i.name !== extra)
                         : [...old, { name: extra, price }]
                     )
                   }
@@ -1224,13 +1235,7 @@ export default function App() {
                   <Text style={{ color: "#3A2922" }}>
                     {checked ? "☑" : "□"}  {extra}
                   </Text>
-
-                  <Text
-                    style={{
-                      color: "#C65C00",
-                      fontWeight: "700",
-                    }}
-                  >
+                  <Text style={{ color: "#C65C00", fontWeight: "700" }}>
                     + {money(price)}
                   </Text>
                 </TouchableOpacity>
@@ -1238,19 +1243,10 @@ export default function App() {
             })}
 
             {label("Observações")}
-
-            {field(
-              "Ex.: sem cebola, borda recheada...",
-              notes,
-              setNotes,
-              {
-                multiline: true,
-                style: {
-                  height: 78,
-                  textAlignVertical: "top",
-                },
-              }
-            )}
+            {field("Ex.: sem cebola, borda recheada...", notes, setNotes, {
+              multiline: true,
+              style: { height: 78, textAlignVertical: "top" },
+            })}
 
             <View
               style={{
@@ -1261,7 +1257,6 @@ export default function App() {
               }}
             >
               <Text style={{ color: MUTED }}>Quantidade</Text>
-
               <View
                 style={{
                   flexDirection: "row",
@@ -1270,17 +1265,13 @@ export default function App() {
                 }}
               >
                 <TouchableOpacity
-                  onPress={() =>
-                    setQuantity(Math.max(1, quantity - 1))
-                  }
+                  onPress={() => setQuantity(Math.max(1, quantity - 1))}
                 >
                   <Text style={{ color: RED, fontSize: 26 }}>⊖</Text>
                 </TouchableOpacity>
-
                 <Text style={{ fontSize: 18, fontWeight: "bold" }}>
                   {quantity}
                 </Text>
-
                 <TouchableOpacity
                   onPress={() => setQuantity(quantity + 1)}
                 >
@@ -1301,7 +1292,7 @@ export default function App() {
           {btn(
             `Adicionar ao carrinho · ${money(
               (selectedPizza.price +
-                extras.reduce((sum, item) => sum + item.price, 0)) *
+                extras.reduce((s, i) => s + i.price, 0)) *
                 quantity
             )}`,
             addToCart
@@ -1311,7 +1302,7 @@ export default function App() {
     );
   }
 
-  // CARRINHO
+  // ---------- CARRINHO ----------
   if (page === "cart") {
     return shell(
       <>
@@ -1319,7 +1310,6 @@ export default function App() {
           "Meu Carrinho",
           `${cartCount} ${cartCount === 1 ? "item" : "itens"}`
         )}
-
         {scroll(
           <>
             {!cart.length &&
@@ -1328,11 +1318,9 @@ export default function App() {
                   <Text style={{ fontSize: 17, fontWeight: "bold" }}>
                     Seu carrinho está vazio
                   </Text>
-
                   <Text style={{ color: MUTED, marginVertical: 8 }}>
                     Escolha uma pizza deliciosa para começar.
                   </Text>
-
                   {btn("Ver cardápio", () => setPage("menu"))}
                 </>
               )}
@@ -1341,55 +1329,36 @@ export default function App() {
               card(
                 <View
                   key={item.key}
-                  style={{
-                    flexDirection: "row",
-                    alignItems: "center",
-                  }}
+                  style={{ flexDirection: "row", alignItems: "center" }}
                 >
                   <Image
                     source={{ uri: item.image }}
-                    style={{
-                      width: 62,
-                      height: 62,
-                      borderRadius: 12,
-                    }}
+                    style={{ width: 62, height: 62, borderRadius: 12 }}
                   />
-
                   <View style={{ flex: 1, marginLeft: 10 }}>
-                    <Text style={{ fontWeight: "bold" }}>
-                      {item.name}
-                    </Text>
-
+                    <Text style={{ fontWeight: "bold" }}>{item.name}</Text>
                     <Text
-                      style={{
-                        color: RED,
-                        fontWeight: "bold",
-                        marginTop: 4,
-                      }}
+                      style={{ color: RED, fontWeight: "bold", marginTop: 4 }}
                     >
                       {money(item.total * item.quantity)}
                     </Text>
-
                     {item.extras.length > 0 && (
                       <Text style={{ color: MUTED, fontSize: 11 }}>
-                        {item.extras.map((extra) => extra.name).join(", ")}
+                        {item.extras.map((e) => e.name).join(", ")}
                       </Text>
                     )}
-
                     {!!item.notes && (
                       <Text style={{ color: MUTED, fontSize: 11 }}>
                         Obs.: {item.notes}
                       </Text>
                     )}
                   </View>
-
                   <View style={{ alignItems: "center" }}>
                     <TouchableOpacity
                       onPress={() => removeItem(item.key)}
                     >
                       <Text style={{ color: RED }}>Remover</Text>
                     </TouchableOpacity>
-
                     <View
                       style={{
                         flexDirection: "row",
@@ -1400,26 +1369,17 @@ export default function App() {
                       <TouchableOpacity
                         onPress={() => changeCartQty(item.key, -1)}
                       >
-                        <Text style={{ color: RED, fontSize: 20 }}>
-                          −
-                        </Text>
+                        <Text style={{ color: RED, fontSize: 20 }}>−</Text>
                       </TouchableOpacity>
-
                       <Text
-                        style={{
-                          marginHorizontal: 9,
-                          fontWeight: "bold",
-                        }}
+                        style={{ marginHorizontal: 9, fontWeight: "bold" }}
                       >
                         {item.quantity}
                       </Text>
-
                       <TouchableOpacity
                         onPress={() => changeCartQty(item.key, 1)}
                       >
-                        <Text style={{ color: RED, fontSize: 20 }}>
-                          ＋
-                        </Text>
+                        <Text style={{ color: RED, fontSize: 20 }}>＋</Text>
                       </TouchableOpacity>
                     </View>
                   </View>
@@ -1429,20 +1389,16 @@ export default function App() {
 
             {!!cart.length && (
               <>
-                <View
-                  style={{
-                    flexDirection: "row",
-                    alignItems: "center",
-                  }}
-                >
+                <View style={{ flexDirection: "row", alignItems: "center" }}>
                   <View style={{ flex: 1, marginRight: 8 }}>
                     {field("Código do cupom", coupon, setCoupon)}
                   </View>
-
-                  {btn("Aplicar", applyCoupon, false, {
-                    borderRadius: 12,
-                    marginTop: 0,
-                  })}
+                  {btn(
+                    "Aplicar",
+                    () => applyCoupon(),
+                    false,
+                    { borderRadius: 12, marginTop: 0 }
+                  )}
                 </View>
 
                 {card(
@@ -1457,7 +1413,6 @@ export default function App() {
                       <Text style={{ color: MUTED }}>Subtotal</Text>
                       <Text>{money(subtotal)}</Text>
                     </View>
-
                     <View
                       style={{
                         flexDirection: "row",
@@ -1465,12 +1420,9 @@ export default function App() {
                         marginVertical: 4,
                       }}
                     >
-                      <Text style={{ color: MUTED }}>
-                        Taxa de entrega
-                      </Text>
+                      <Text style={{ color: MUTED }}>Taxa de entrega</Text>
                       <Text>{money(deliveryFee)}</Text>
                     </View>
-
                     {discount > 0 && (
                       <View
                         style={{
@@ -1485,7 +1437,18 @@ export default function App() {
                         </Text>
                       </View>
                     )}
-
+                    {isFreeShipping && (
+                      <View
+                        style={{
+                          flexDirection: "row",
+                          justifyContent: "space-between",
+                          marginVertical: 4,
+                        }}
+                      >
+                        <Text style={{ color: GREEN }}>Frete grátis</Text>
+                        <Text style={{ color: GREEN }}>aplicado</Text>
+                      </View>
+                    )}
                     <View
                       style={{
                         borderTopWidth: 1,
@@ -1499,7 +1462,6 @@ export default function App() {
                       <Text style={{ fontWeight: "bold", fontSize: 17 }}>
                         Total
                       </Text>
-
                       <Text
                         style={{
                           color: RED,
@@ -1526,14 +1488,8 @@ export default function App() {
                     >
                       O que deseja fazer?
                     </Text>
-
                     {btn("Finalizar compra", () => setPage("customer"))}
-
-                    {btn(
-                      "Continuar comprando",
-                      () => setPage("menu"),
-                      true
-                    )}
+                    {btn("Continuar comprando", () => setPage("menu"), true)}
                   </>
                 )}
               </>
@@ -1545,12 +1501,11 @@ export default function App() {
     );
   }
 
-  // HISTÓRICO DE PEDIDOS
+  // ---------- PEDIDOS ----------
   if (page === "orders") {
     return shell(
       <>
         {heading("Meus Pedidos", "Histórico completo")}
-
         {scroll(
           <>
             {orders.length === 0 &&
@@ -1559,11 +1514,9 @@ export default function App() {
                   <Text style={{ fontWeight: "bold" }}>
                     Você ainda não tem pedidos
                   </Text>
-
                   <Text style={{ color: MUTED, marginVertical: 8 }}>
                     Seus pedidos aparecerão aqui depois da compra.
                   </Text>
-
                   {btn("Fazer pedido", () => setPage("home"))}
                 </>
               )}
@@ -1577,19 +1530,14 @@ export default function App() {
                       justifyContent: "space-between",
                     }}
                   >
-                    <Text style={{ fontWeight: "bold" }}>
-                      {item.id}
-                    </Text>
-
+                    <Text style={{ fontWeight: "bold" }}>{item.id}</Text>
                     <Text style={{ color: GREEN, fontSize: 12 }}>
                       ● {item.status}
                     </Text>
                   </View>
-
                   <Text style={{ color: MUTED, marginVertical: 8 }}>
                     {item.items}
                   </Text>
-
                   <View
                     style={{
                       flexDirection: "row",
@@ -1600,12 +1548,10 @@ export default function App() {
                     <Text style={{ color: MUTED, fontSize: 12 }}>
                       {item.createdAt}
                     </Text>
-
                     <Text style={{ color: RED, fontWeight: "bold" }}>
                       {money(item.total)}
                     </Text>
                   </View>
-
                   {btn(
                     "Rastrear pedido",
                     () => {
@@ -1614,7 +1560,6 @@ export default function App() {
                     },
                     true
                   )}
-
                   {btn("Pedir novamente", () => setPage("menu"))}
                 </>,
                 {
@@ -1630,80 +1575,268 @@ export default function App() {
     );
   }
 
-  // JOGOS
+  // ---------- JOGOS (AGORA FUNCIONANDO) ----------
   if (page === "games") {
+    // ---- SUBTELA: RODA DA FORTUNA ----
+    if (activeGame === "roda") {
+      const rotate = spinValue.interpolate({
+        inputRange: [0, 1],
+        outputRange: ["0deg", "1440deg"],
+      });
+
+      return shell(
+        <>
+          {backHeader("Roda da Fortuna", "Gire e ganhe cupons")}
+          {scroll(
+            <>
+              <View style={{ alignItems: "center", paddingVertical: 30 }}>
+                <Animated.View
+                  style={{
+                    width: 220,
+                    height: 220,
+                    borderRadius: 110,
+                    borderWidth: 8,
+                    borderColor: RED,
+                    backgroundColor: CREAM,
+                    alignItems: "center",
+                    justifyContent: "center",
+                    transform: [{ rotate }],
+                  }}
+                >
+                  <Text style={{ fontSize: 70 }}>🍕</Text>
+                </Animated.View>
+
+                {wheelResult && (
+                  <Text
+                    style={{
+                      marginTop: 20,
+                      fontSize: 20,
+                      fontWeight: "bold",
+                      color: wheelResult.coupon ? GREEN : RED,
+                    }}
+                  >
+                    {wheelResult.label}
+                  </Text>
+                )}
+
+                {gameResult && (
+                  <Text
+                    style={{
+                      marginTop: 6,
+                      color: GREEN,
+                      fontSize: 13,
+                      textAlign: "center",
+                    }}
+                  >
+                    Cupom {gameResult.coupon} aplicado no carrinho!
+                  </Text>
+                )}
+              </View>
+
+              {btn(spinning ? "Girando..." : "Girar a roda", spinWheel)}
+              {btn(
+                "Voltar aos jogos",
+                () => {
+                  setActiveGame(null);
+                  setWheelResult(null);
+                  setGameResult(null);
+                },
+                true
+              )}
+            </>
+          )}
+        </>
+      );
+    }
+
+    // ---- SUBTELA: JOGO DA MEMÓRIA ----
+    if (activeGame === "memoria") {
+      return shell(
+        <>
+          {backHeader("Jogo da Memória", "Encontre todos os pares")}
+          {scroll(
+            <>
+              <Text style={{ textAlign: "center", marginBottom: 10 }}>
+                Pares: {matched.length / 2}/
+                {memoryCards.length ? memoryCards.length / 2 : 4}
+              </Text>
+
+              <View
+                style={{
+                  flexDirection: "row",
+                  flexWrap: "wrap",
+                  justifyContent: "center",
+                }}
+              >
+                {memoryCards.map((icon, index) => {
+                  const isOpen =
+                    flipped.includes(index) || matched.includes(index);
+                  return (
+                    <TouchableOpacity
+                      key={index}
+                      onPress={() => flipCard(index)}
+                      style={{
+                        width: "22%",
+                        aspectRatio: 1,
+                        margin: "1.5%",
+                        borderRadius: 12,
+                        backgroundColor: isOpen ? WHITE : RED,
+                        borderWidth: 1,
+                        borderColor: BORDER,
+                        alignItems: "center",
+                        justifyContent: "center",
+                      }}
+                    >
+                      <Text style={{ fontSize: 30 }}>
+                        {isOpen ? icon : "❓"}
+                      </Text>
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
+
+              {gameResult && (
+                <Text
+                  style={{
+                    textAlign: "center",
+                    color: GREEN,
+                    marginTop: 12,
+                    fontWeight: "bold",
+                  }}
+                >
+                  🎉 Você ganhou! Cupom {gameResult.coupon} aplicado.
+                </Text>
+              )}
+
+              {btn("Novo jogo", startMemory)}
+              {btn(
+                "Voltar aos jogos",
+                () => {
+                  setActiveGame(null);
+                  setGameResult(null);
+                },
+                true
+              )}
+            </>
+          )}
+        </>
+      );
+    }
+
+    // ---- SUBTELA: QUIZ ----
+    if (activeGame === "quiz") {
+      const current = QUIZ[quizIndex];
+      return shell(
+        <>
+          {backHeader(
+            "Quiz Pizzaria",
+            `Pergunta ${quizIndex + 1} de ${QUIZ.length} · Acertos: ${quizScore}`
+          )}
+          {scroll(
+            <>
+              {card(
+                <>
+                  <Text
+                    style={{
+                      fontSize: 17,
+                      fontWeight: "bold",
+                      marginBottom: 10,
+                    }}
+                  >
+                    {current.q}
+                  </Text>
+                  {current.options.map((opt, i) => (
+                    <TouchableOpacity
+                      key={i}
+                      onPress={() => answerQuiz(i)}
+                      style={{
+                        backgroundColor: WHITE,
+                        borderWidth: 1,
+                        borderColor: BORDER,
+                        borderRadius: 12,
+                        padding: 14,
+                        marginVertical: 5,
+                      }}
+                    >
+                      <Text>{opt}</Text>
+                    </TouchableOpacity>
+                  ))}
+                </>
+              )}
+
+              {btn(
+                "Reiniciar quiz",
+                () => {
+                  setQuizIndex(0);
+                  setQuizScore(0);
+                  setGameResult(null);
+                },
+                true
+              )}
+              {btn(
+                "Voltar aos jogos",
+                () => {
+                  setActiveGame(null);
+                  setQuizIndex(0);
+                  setQuizScore(0);
+                  setGameResult(null);
+                },
+                true
+              )}
+            </>
+          )}
+        </>
+      );
+    }
+
+    // ---- LISTA DE JOGOS ----
     return shell(
       <>
-        {heading(
-          "Jogos & Cupons",
-          "Jogue e ganhe descontos exclusivos"
-        )}
-
+        {heading("Jogos & Cupons", "Jogue e ganhe descontos exclusivos")}
         {scroll(
           <>
             {card(
               <Text style={{ color: "#673AB7" }}>
-                Ganhe um cupom por vitória. Os prêmios são demonstrativos.
+                Escolha um jogo abaixo. Ao ganhar, o cupom é aplicado
+                automaticamente no carrinho.
               </Text>
             )}
 
             {[
-              [
-                "◉",
-                "Roda da Fortuna",
-                "Gire e ganhe cupons exclusivos",
-                "Prêmio: 10% OFF",
-              ],
-              [
-                "▦",
-                "Jogo da Memória",
-                "Encontre os pares e ganhe desconto",
-                "Prêmio: Frete Grátis",
-              ],
-              [
-                "ⓘ",
-                "Quiz Pizzaria",
-                "Responda e desbloqueie cupons",
-                "Prêmio: 15% OFF",
-              ],
-            ].map(([icon, title, description, prize]) =>
+              {
+                key: "roda",
+                icon: "◉",
+                title: "Roda da Fortuna",
+                desc: "Gire e ganhe cupons",
+                bg: RED_DARK,
+              },
+              {
+                key: "memoria",
+                icon: "▦",
+                title: "Jogo da Memória",
+                desc: "Encontre os pares",
+                bg: "#A95408",
+              },
+              {
+                key: "quiz",
+                icon: "ⓘ",
+                title: "Quiz Pizzaria",
+                desc: "Responda e desbloqueie",
+                bg: "#12643D",
+              },
+            ].map((g) =>
               card(
                 <TouchableOpacity
                   onPress={() => {
-                    const message =
-                      title === "Quiz Pizzaria"
-                        ? "Qual ingrediente é tradicional na Margherita? A) Manjericão  B) Abacaxi  C) Batata"
-                        : title === "Roda da Fortuna"
-                        ? "A roda parou em: 10% OFF! (demonstração)"
-                        : "Você encontrou um par! (demonstração)";
-
-                    setGameMessage(message);
-
-                    if (title === "Quiz Pizzaria") {
-                      Alert.alert(
-                        title,
-                        message,
-                        [
-                          { text: "Abacaxi" },
-                          { text: "Batata" },
-                          {
-                            text: "Manjericão",
-                            onPress: () =>
-                              Alert.alert(
-                                "Acertou!",
-                                "Cupom demonstrativo: VENEZA10"
-                              ),
-                          },
-                        ]
-                      );
-                    } else {
-                      Alert.alert(title, message);
+                    setActiveGame(g.key);
+                    setGameResult(null);
+                    if (g.key === "memoria") startMemory();
+                    if (g.key === "quiz") {
+                      setQuizIndex(0);
+                      setQuizScore(0);
                     }
                   }}
-                  style={{
-                    flexDirection: "row",
-                    alignItems: "center",
-                  }}
+                  style={{ flexDirection: "row", alignItems: "center" }}
                 >
                   <View
                     style={{
@@ -1713,52 +1846,21 @@ export default function App() {
                       marginRight: 12,
                     }}
                   >
-                    <Text style={{ fontSize: 24 }}>{icon}</Text>
+                    <Text style={{ fontSize: 24 }}>{g.icon}</Text>
                   </View>
-
                   <View style={{ flex: 1 }}>
-                    <Text
-                      style={{
-                        fontWeight: "bold",
-                        fontSize: 16,
-                      }}
-                    >
-                      {title}
+                    <Text style={{ fontWeight: "bold", fontSize: 16 }}>
+                      {g.title}
                     </Text>
-
                     <Text
-                      style={{
-                        color: MUTED,
-                        fontSize: 12,
-                        marginVertical: 4,
-                      }}
+                      style={{ color: MUTED, fontSize: 12, marginTop: 4 }}
                     >
-                      {description}
-                    </Text>
-
-                    <Text
-                      style={{
-                        color: RED,
-                        fontSize: 11,
-                        fontWeight: "bold",
-                      }}
-                    >
-                      {prize}
+                      {g.desc}
                     </Text>
                   </View>
-
-                  <Text style={{ color: MUTED, fontSize: 24 }}>
-                    ›
-                  </Text>
+                  <Text style={{ color: MUTED, fontSize: 24 }}>›</Text>
                 </TouchableOpacity>,
-                {
-                  backgroundColor:
-                    title === "Roda da Fortuna"
-                      ? RED_DARK
-                      : title === "Jogo da Memória"
-                      ? "#A95408"
-                      : "#12643D",
-                }
+                { backgroundColor: g.bg }
               )
             )}
           </>
@@ -1768,7 +1870,7 @@ export default function App() {
     );
   }
 
-  // PERFIL
+  // ---------- PERFIL ----------
   if (page === "profile") {
     return shell(
       <>
@@ -1782,7 +1884,6 @@ export default function App() {
           }}
         >
           <Text style={{ color: WHITE, fontSize: 44 }}>♙</Text>
-
           <Text
             style={{
               color: WHITE,
@@ -1793,7 +1894,6 @@ export default function App() {
           >
             {name || "Cliente"}
           </Text>
-
           <Text style={{ color: "#F9DECE" }}>{email}</Text>
         </View>
 
@@ -1819,22 +1919,12 @@ export default function App() {
                 }}
               >
                 <Text
-                  style={{
-                    color: MUTED,
-                    fontSize: 20,
-                    marginRight: 12,
-                  }}
+                  style={{ color: MUTED, fontSize: 20, marginRight: 12 }}
                 >
                   {icon}
                 </Text>
-
-                <Text style={{ flex: 1, fontWeight: "600" }}>
-                  {title}
-                </Text>
-
-                <Text style={{ color: MUTED, fontSize: 22 }}>
-                  ›
-                </Text>
+                <Text style={{ flex: 1, fontWeight: "600" }}>{title}</Text>
+                <Text style={{ color: MUTED, fontSize: 22 }}>›</Text>
               </TouchableOpacity>
             ))}
 
@@ -1854,32 +1944,27 @@ export default function App() {
     );
   }
 
-  // ENDEREÇOS
+  // ---------- ENDEREÇOS ----------
   if (page === "addresses") {
     return shell(
       <>
         {backHeader("Seus Dados", "Confirme o endereço de entrega")}
-
         {scroll(
           <>
             {card(
               <>
                 {label("Dados do cliente")}
                 {field("Nome completo", name, setName)}
-
                 {label("Telefone / WhatsApp")}
                 {field("(11) 99999-9999", phone, setPhone, {
                   keyboardType: "phone-pad",
                 })}
               </>
             )}
-
             {label("Endereço de entrega")}
-
             {card(
               <>
                 {field("Rua, número, bairro", address, setAddress)}
-
                 {btn(
                   "Adicionar / salvar endereço",
                   () =>
@@ -1891,7 +1976,6 @@ export default function App() {
                 )}
               </>
             )}
-
             {btn("Confirmar endereço", () => setPage("fulfillment"))}
           </>
         )}
@@ -1899,18 +1983,14 @@ export default function App() {
     );
   }
 
-  // FAVORITOS
+  // ---------- FAVORITOS ----------
   if (page === "favorites") {
     return shell(
       <>
         {backHeader("Pizzas favoritas")}
-
         {scroll(
           <>
-            {PIZZAS.filter((pizza) =>
-              favorites.includes(pizza.id)
-            ).map(pizzaCard)}
-
+            {PIZZAS.filter((p) => favorites.includes(p.id)).map(pizzaCard)}
             {!favorites.length && (
               <Text style={{ color: MUTED, marginTop: 15 }}>
                 Toque no coração de uma pizza para salvá-la aqui.
@@ -1922,24 +2002,22 @@ export default function App() {
     );
   }
 
-  // CUPONS
+  // ---------- CUPONS ----------
   if (page === "coupons") {
     return shell(
       <>
         {backHeader("Meus cupons")}
-
         {scroll(
           <>
-            {card(
-              <>
-                <Text style={{ fontWeight: "bold", color: RED }}>
-                  VENEZA10
-                </Text>
-
-                <Text style={{ color: MUTED }}>
-                  10% de desconto nos itens do pedido.
-                </Text>
-              </>
+            {Object.entries(VALID_COUPONS).map(([code, data]) =>
+              card(
+                <View key={code}>
+                  <Text style={{ fontWeight: "bold", color: RED }}>
+                    {code}
+                  </Text>
+                  <Text style={{ color: MUTED }}>{data.label} no pedido.</Text>
+                </View>
+              )
             )}
           </>
         )}
@@ -1947,12 +2025,11 @@ export default function App() {
     );
   }
 
-  // SUPORTE
+  // ---------- SUPORTE ----------
   if (page === "support") {
     return shell(
       <>
         {backHeader("Ajuda & Suporte")}
-
         {scroll(
           <>
             {card(
@@ -1960,17 +2037,10 @@ export default function App() {
                 <Text style={{ fontWeight: "bold" }}>
                   Como podemos ajudar?
                 </Text>
-
-                <Text
-                  style={{
-                    color: MUTED,
-                    marginVertical: 8,
-                  }}
-                >
+                <Text style={{ color: MUTED, marginVertical: 8 }}>
                   Para suporte real, conecte esta área ao atendimento da
                   pizzaria.
                 </Text>
-
                 {btn("Falar com atendimento", () =>
                   Alert.alert(
                     "Suporte",
@@ -1985,44 +2055,37 @@ export default function App() {
     );
   }
 
-  // DADOS DO CLIENTE
+  // ---------- DADOS DO CLIENTE ----------
   if (page === "customer") {
     return shell(
       <>
         {backHeader("Seus Dados", "Confirme o endereço de entrega")}
-
         {scroll(
           <>
             {card(
               <>
                 {label("Nome completo")}
                 {field("Nome completo", name, setName)}
-
                 {label("Telefone / WhatsApp")}
                 {field("(11) 99999-9999", phone, setPhone, {
                   keyboardType: "phone-pad",
                 })}
               </>
             )}
-
             {label("Endereço de entrega")}
-
             {card(
               <TouchableOpacity onPress={() => setPage("addresses")}>
                 <Text style={{ color: RED, fontWeight: "bold" }}>
                   ●  Casa (padrão)
                 </Text>
-
                 <Text style={{ color: MUTED, marginTop: 6 }}>
                   {address}
                 </Text>
-
                 <Text style={{ color: RED, marginTop: 8 }}>
                   Alterar endereço ›
                 </Text>
               </TouchableOpacity>
             )}
-
             {btn("Confirmar endereço", () => setPage("fulfillment"))}
           </>
         )}
@@ -2030,12 +2093,11 @@ export default function App() {
     );
   }
 
-  // ENTREGA OU RETIRADA
+  // ---------- ENTREGA OU RETIRADA ----------
   if (page === "fulfillment") {
     return shell(
       <>
         {backHeader("Como prefere?", "Entrega ou retirada no local")}
-
         {scroll(
           <>
             {[
@@ -2060,12 +2122,10 @@ export default function App() {
                   <Text style={{ fontWeight: "bold", fontSize: 16 }}>
                     {option}
                   </Text>
-
                   <Text style={{ color: MUTED, marginTop: 4 }}>
                     {description}
                   </Text>
                 </View>
-
                 <Text style={{ color: RED, fontSize: 20 }}>
                   {delivery === option ? "⦿" : "◯"}
                 </Text>
@@ -2077,7 +2137,6 @@ export default function App() {
                 <Text style={{ color: MUTED }}>
                   ⌖ Rua Veneza, 42 · Centro · São Paulo, SP
                 </Text>
-
                 <Text
                   style={{
                     color: "#9B4D00",
@@ -2097,12 +2156,11 @@ export default function App() {
     );
   }
 
-  // PAGAMENTO
+  // ---------- PAGAMENTO ----------
   if (page === "payment") {
     return shell(
       <>
         {backHeader("Pagamento", `Total: ${money(total)}`)}
-
         {scroll(
           <>
             {[
@@ -2129,7 +2187,6 @@ export default function App() {
                   <Text style={{ fontWeight: "bold", fontSize: 15 }}>
                     {option}
                   </Text>
-
                   <Text style={{ color: MUTED, fontSize: 12 }}>
                     {
                       [
@@ -2141,7 +2198,6 @@ export default function App() {
                     }
                   </Text>
                 </View>
-
                 <Text style={{ color: RED, fontSize: 20 }}>
                   {payment === option ? "⦿" : "◯"}
                 </Text>
@@ -2151,10 +2207,7 @@ export default function App() {
             {payment === "PIX" &&
               card(
                 <View style={{ alignItems: "center" }}>
-                  <Text style={{ fontWeight: "bold" }}>
-                    PIX selecionado
-                  </Text>
-
+                  <Text style={{ fontWeight: "bold" }}>PIX selecionado</Text>
                   <Text
                     style={{
                       color: MUTED,
@@ -2162,20 +2215,16 @@ export default function App() {
                       marginVertical: 8,
                     }}
                   >
-                    O QR Code real deve ser gerado pelo provedor de
-                    pagamentos integrado ao backend.
+                    O QR Code real deve ser gerado pelo provedor de pagamentos
+                    integrado ao backend.
                   </Text>
-
                   <Text style={{ fontSize: 32 }}>▦ ▦ ▦</Text>
-
                   <Text style={{ color: MUTED, marginTop: 6 }}>
                     Chave PIX demonstrativa
                   </Text>
-
                   <Text style={{ fontWeight: "bold", color: RED }}>
                     venezasantamassa@pix.com.br
                   </Text>
-
                   {btn(
                     "Copiar chave (demonstração)",
                     () =>
@@ -2192,11 +2241,9 @@ export default function App() {
               card(
                 <>
                   {label("Troco para quanto?")}
-
                   {field("R$ 0,00", changeFor, setChangeFor, {
                     keyboardType: "decimal-pad",
                   })}
-
                   <Text style={{ color: MUTED }}>
                     Deixe em branco se não precisar de troco.
                   </Text>
@@ -2210,12 +2257,11 @@ export default function App() {
     );
   }
 
-  // REVISÃO DO PEDIDO
+  // ---------- REVISÃO ----------
   if (page === "review") {
     return shell(
       <>
         {backHeader("Revisar Pedido")}
-
         {scroll(
           <>
             {card(
@@ -2223,7 +2269,6 @@ export default function App() {
                 <Text style={{ fontWeight: "bold", color: RED }}>
                   ♧  Itens
                 </Text>
-
                 {cart.map((item) => (
                   <View
                     key={item.key}
@@ -2236,7 +2281,6 @@ export default function App() {
                     <Text style={{ flex: 1 }}>
                       {item.quantity}x {item.name}
                     </Text>
-
                     <Text style={{ color: RED, fontWeight: "bold" }}>
                       {money(item.total * item.quantity)}
                     </Text>
@@ -2250,7 +2294,6 @@ export default function App() {
                 <Text style={{ fontWeight: "bold", color: "#573C30" }}>
                   ⌖  Entrega
                 </Text>
-
                 <Text style={{ color: MUTED, marginTop: 10 }}>
                   {delivery === "Entrega em casa"
                     ? address
@@ -2264,11 +2307,7 @@ export default function App() {
                 <Text style={{ fontWeight: "bold", color: "#573C30" }}>
                   ▱  Pagamento
                 </Text>
-
-                <Text style={{ color: MUTED, marginTop: 10 }}>
-                  {payment}
-                </Text>
-
+                <Text style={{ color: MUTED, marginTop: 10 }}>{payment}</Text>
                 {payment === "Dinheiro" && !!changeFor && (
                   <Text style={{ color: GREEN, marginTop: 5 }}>
                     Troco para: {changeFor}
@@ -2298,7 +2337,6 @@ export default function App() {
                     <Text>{value}</Text>
                   </View>
                 ))}
-
                 <View
                   style={{
                     borderTopWidth: 1,
@@ -2312,7 +2350,6 @@ export default function App() {
                   <Text style={{ fontWeight: "bold", fontSize: 16 }}>
                     Total
                   </Text>
-
                   <Text
                     style={{
                       color: RED,
@@ -2333,7 +2370,7 @@ export default function App() {
     );
   }
 
-  // CONFIRMAÇÃO
+  // ---------- CONFIRMAÇÃO ----------
   if (page === "confirmation") {
     return shell(
       scroll(
@@ -2350,7 +2387,6 @@ export default function App() {
           >
             <Text style={{ color: GREEN, fontSize: 54 }}>✓</Text>
           </View>
-
           <Text
             style={{
               color: GREEN,
@@ -2362,7 +2398,6 @@ export default function App() {
           >
             Pedido confirmado!
           </Text>
-
           <Text
             style={{
               color: MUTED,
@@ -2378,7 +2413,6 @@ export default function App() {
               <Text style={{ color: MUTED, textAlign: "center" }}>
                 Número do pedido
               </Text>
-
               <Text
                 style={{
                   textAlign: "center",
@@ -2390,11 +2424,7 @@ export default function App() {
               >
                 {order?.id}
               </Text>
-
-              <Text style={{ textAlign: "center" }}>
-                {order?.items}
-              </Text>
-
+              <Text style={{ textAlign: "center" }}>{order?.items}</Text>
               <Text
                 style={{
                   textAlign: "center",
@@ -2406,7 +2436,6 @@ export default function App() {
               >
                 {money(order?.total || 0)}
               </Text>
-
               <Text
                 style={{
                   color: MUTED,
@@ -2423,25 +2452,19 @@ export default function App() {
             { width: "100%", marginTop: 20 }
           )}
 
-          {btn(
-            "Rastrear pedido",
-            () => setPage("tracking"),
-            false,
-            { width: "100%", marginTop: 16 }
-          )}
-
-          {btn(
-            "Voltar ao início",
-            () => setPage("home"),
-            true,
-            { width: "100%" }
-          )}
+          {btn("Rastrear pedido", () => setPage("tracking"), false, {
+            width: "100%",
+            marginTop: 16,
+          })}
+          {btn("Voltar ao início", () => setPage("home"), true, {
+            width: "100%",
+          })}
         </View>
       )
     );
   }
 
-  // RASTREAMENTO
+  // ---------- RASTREAMENTO ----------
   if (page === "tracking") {
     const statuses = [
       "Pedido recebido",
@@ -2450,7 +2473,6 @@ export default function App() {
       "Saiu para entrega",
       "Pedido entregue",
     ];
-
     const current = Math.max(
       0,
       statuses.indexOf(order?.status || "Pedido recebido")
@@ -2459,7 +2481,6 @@ export default function App() {
     return shell(
       <>
         {backHeader("Rastrear Pedido", order?.id || "Pedido")}
-
         {scroll(
           <>
             {card(
@@ -2473,10 +2494,8 @@ export default function App() {
                 >
                   Seu pedido está sendo acompanhado!
                 </Text>
-
                 <Text style={{ color: MUTED, marginTop: 5 }}>
-                  Previsão de entrega: aproximadamente 40 minutos,
-                  sujeita à atualização da pizzaria.
+                  Previsão de entrega: aproximadamente 40 minutos.
                 </Text>
               </>
             )}
@@ -2486,17 +2505,9 @@ export default function App() {
                 {statuses.map((status, index) => (
                   <View
                     key={status}
-                    style={{
-                      flexDirection: "row",
-                      minHeight: 55,
-                    }}
+                    style={{ flexDirection: "row", minHeight: 55 }}
                   >
-                    <View
-                      style={{
-                        width: 32,
-                        alignItems: "center",
-                      }}
-                    >
+                    <View style={{ width: 32, alignItems: "center" }}>
                       <View
                         style={{
                           width: 24,
@@ -2509,15 +2520,11 @@ export default function App() {
                         }}
                       >
                         <Text
-                          style={{
-                            color: WHITE,
-                            fontWeight: "bold",
-                          }}
+                          style={{ color: WHITE, fontWeight: "bold" }}
                         >
                           {index <= current ? "✓" : "·"}
                         </Text>
                       </View>
-
                       {index < statuses.length - 1 && (
                         <View
                           style={{
@@ -2529,7 +2536,6 @@ export default function App() {
                         />
                       )}
                     </View>
-
                     <View
                       style={{
                         flex: 1,
@@ -2546,7 +2552,6 @@ export default function App() {
                       >
                         {status}
                       </Text>
-
                       {index === current && (
                         <Text
                           style={{
@@ -2564,15 +2569,9 @@ export default function App() {
               </>
             )}
 
-            <Text
-              style={{
-                color: MUTED,
-                fontSize: 12,
-                marginTop: 5,
-              }}
-            >
-              Demonstração: o status só muda automaticamente quando
-              conectado ao backend da pizzaria.
+            <Text style={{ color: MUTED, fontSize: 12, marginTop: 5 }}>
+              Demonstração: o status só muda automaticamente quando conectado
+              ao backend.
             </Text>
 
             {btn(
@@ -2586,29 +2585,22 @@ export default function App() {
                 ),
               true
             )}
-
             {btn("Ver meus pedidos", () => setPage("orders"))}
-
-            {btn(
-              "Voltar ao início",
-              () => setPage("home"),
-              true
-            )}
+            {btn("Voltar ao início", () => setPage("home"), true)}
           </>
         )}
       </>
     );
   }
 
+  // ---------- FALLBACK ----------
   return shell(
     scroll(
       <>
         {backHeader("Veneza Santa Massa")}
-
         {card(
           <>
             <Text>Esta tela ainda não foi configurada.</Text>
-
             {btn("Voltar ao início", () => setPage("home"))}
           </>
         )}
